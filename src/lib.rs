@@ -114,7 +114,7 @@ where
     }
 
     /// Read the next ADC sample.
-    pub async fn read(&mut self) -> Result<u32, CS1237Error> {
+    pub async fn read(&mut self) -> Result<i32, CS1237Error> {
         // Wait for a falling edge on the DATA/DRDY pin.
         self.data.set_as_input(Pull::None);
 
@@ -123,12 +123,17 @@ where
             .await
             .map_err(|_| CS1237Error::NoTriggerPulse)?;
 
-        let mut data: u32 = 0;
+        let mut value: i32 = 0;
         for i in (0..24).rev() {
-            data |= if self.read_bit() { 1 } else { 0 } << i;
+            value |= if self.read_bit() { 1 } else { 0 } << i;
         }
 
-        Ok(data)
+        // Fix the sign bit.
+        if value > 0x7FFFFF {
+            value -= 0x1000000;
+        }
+
+        Ok(value)
     }
 
     /// Set the sample rate, gain and channel configuration.
