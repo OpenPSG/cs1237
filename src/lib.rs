@@ -47,6 +47,9 @@ use embassy_stm32::{
 };
 use embassy_time::{with_timeout, Duration};
 
+#[cfg(feature = "defmt")]
+use defmt::*;
+
 /// The 2-wire serial interface clock frequency.
 /// According to the datasheet, the maximum clock frequency is 1MHz.
 /// We derate this a little to be safe.
@@ -87,7 +90,8 @@ pub struct CS1237<CLK: Pin, DATA: Pin, DRDY: Pin> {
     cpu_freq_hz: u32,
 }
 
-#[derive(Debug)]
+#[derive(PartialEq, Eq, Clone, Copy, Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum CS1237Error {
     NoTriggerPulse,
     SensorNotResponding,
