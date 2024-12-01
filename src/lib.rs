@@ -39,8 +39,9 @@
 //! See the LICENSE file for more details.
 //!
 
-#![no_std]
+#![cfg_attr(not(test), no_std)]
 
+use core::convert::TryFrom;
 use embassy_stm32::{
     exti::ExtiInput,
     gpio::{Flex, Level, Output, Pin, Pull, Speed},
@@ -64,6 +65,20 @@ pub enum SampleRate {
     Hz1280 = 3,
 }
 
+impl TryFrom<i32> for SampleRate {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            10 => Ok(SampleRate::Hz10),
+            40 => Ok(SampleRate::Hz40),
+            640 => Ok(SampleRate::Hz640),
+            1280 => Ok(SampleRate::Hz1280),
+            _ => Err("Invalid value for SampleRate"),
+        }
+    }
+}
+
 /// Gain configuration.
 #[derive(Clone, Copy, Debug)]
 pub enum Gain {
@@ -73,6 +88,20 @@ pub enum Gain {
     Gain128 = 3,
 }
 
+impl TryFrom<i32> for Gain {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            10 => Ok(Gain::Gain1),
+            2 => Ok(Gain::Gain2),
+            64 => Ok(Gain::Gain64),
+            128 => Ok(Gain::Gain128),
+            _ => Err("Invalid value for Gain"),
+        }
+    }
+}
+
 /// ADC channel configuration.
 #[derive(Clone, Copy, Debug)]
 pub enum Channel {
@@ -80,6 +109,20 @@ pub enum Channel {
     Reserved = 1,
     Temperature = 2,
     InternalShort = 3,
+}
+
+impl TryFrom<i32> for Channel {
+    type Error = &'static str;
+
+    fn try_from(value: i32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Channel::ChannelA),
+            1 => Ok(Channel::Reserved),
+            2 => Ok(Channel::Temperature),
+            3 => Ok(Channel::InternalShort),
+            _ => Err("Invalid value for Channel"),
+        }
+    }
 }
 
 /// A driver for the CHIPSEA CS1237 ADC.
