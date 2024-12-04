@@ -263,10 +263,9 @@ where
     fn read_bit(&mut self) -> bool {
         self.clk.set_high();
         cortex_m::asm::delay(self.cpu_freq_hz / (2 * BUS_FREQUENCY_HZ));
-        let bit = self.data.is_high();
         self.clk.set_low();
         cortex_m::asm::delay(self.cpu_freq_hz / (2 * BUS_FREQUENCY_HZ));
-        bit
+        self.data.is_high()
     }
 
     fn write_bit(&mut self, bit: bool) {

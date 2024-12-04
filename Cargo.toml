@@ -1,6 +1,6 @@
 [package]
 name = "cs1237"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MPL-2.0"
 description = "A Rust Driver For The CS1237 ADC."
@@ -13,7 +13,8 @@ defmt = { version = "0.3", optional = true }
 
 [dev-dependencies]
 defmt = "0.3"
+embassy-stm32 = { version = "0.1.0", features = ["exti", "stm32f103c8"] }
 
 [features]
-default = ["embassy-stm32/stm32f103c8"]
+default = []
 defmt = ["dep:defmt"]
