@@ -1,9 +1,6 @@
 # CHIPSEA CS1237 ADC Driver
 
-*NOTE: Nobody should use this driver. The performance of the CS1237 is not great, and almost all usecases can be better served with more common ADCs (eg. HX710).*
+An [embedded_hal_async](https://crates.io/crates/embedded-hal-async) driver for 
+the [CS1237](https://en.chipsea.com/product/details/?id=1155&pid=77) precision 
+24-bit ADC.
 
-A Rust Driver For The [CS1237](https://en.chipsea.com/product/details/?id=1155&pid=77) ADC.
-
-## Supported Environments
-
-* Embassy STM32.

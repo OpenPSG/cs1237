@@ -1,19 +1,20 @@
 [package]
 name = "cs1237"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2021"
 license = "MPL-2.0"
-description = "A Rust Driver For The CS1237 ADC."
+description = "An embedded_hal_async driver for the CS1237 precision 24-bit ADC."
 
 [dependencies]
-cortex-m = "0.7.7"
-embassy-stm32 = { version = "0.1.0", features = ["exti"] }
+byteorder = {version = "1.5.0", default-features = false}
+embedded-hal = "1.0.0"
+embedded-hal-async = "1.0.0"
 embassy-time = "0.3.2"
 defmt = { version = "0.3", optional = true }
-
-[dev-dependencies]
-defmt = "0.3"
+embassy-stm32 = { version = "0.1.0", optional = true, features = ["defmt", "exti"] }
 
 [features]
-default = ["embassy-stm32/stm32f103c8"]
+default = []
 defmt = ["dep:defmt"]
+embassy-stm32 = ["dep:embassy-stm32"]
+doctest = ["embassy-stm32", "embassy-stm32/stm32f103c8"]

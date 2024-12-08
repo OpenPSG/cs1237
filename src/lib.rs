@@ -1,35 +1,30 @@
 //! # CHIPSEA CS1237 ADC Driver
 //!
-//! This crate provides a Rust Driver For The
+//! An embedded_hal_async driver for the
 //! [CS1237](https://en.chipsea.com/product/details/?id=1155&pid=77) ADC.
 //!
 //! ## Example Usage
 //!
-//! ```rust
-//! use embassy_stm32::gpio::{Level, Input, Output, Flex, Pull, Speed};
-//! use embassy_stm32::exti::ExtiInput;
-//! use embassy_stm32::{Peripheral, Peripherals};
-//! use defmt::info;
+//! ```no_run
+//! use embassy_time::Delay;
+//! use cs1237::{Cs1237, Gain, SamplesPerSecond, Channel, DEFAULT_BUS_FREQUENCY_HZ};
+//! use cs1237::stm32::MetaPin;
+//! use embassy_stm32::{gpio::{Output, Level, Speed}, Peripherals, peripherals};
 //!
-//! use cs1237::{CS1237, SampleRate, Gain, Channel};
+//! async fn read_adc_value(p: Peripherals) {
+//!   let clk_pin = Output::new(p.PA0, Level::Low, Speed::VeryHigh);
+//!   let data_pin = MetaPin::new(p.PA1, p.EXTI1);
 //!
-//! async fn print_adc_value(p: Peripherals) {
-//! let clk = Output::new(p.PA0, Level::Low, Speed::VeryHigh);
-//! let data_pin_clone = unsafe { p.PA1.clone_unchecked() };
-//! let data = Flex::new(data_pin_clone);
-//! let drdy = ExtiInput::new(Input::new(p.PA1, Pull::None), p.EXTI1);
+//!   let mut adc: Cs1237<Output<'static, peripherals::PA0>, MetaPin<'static, peripherals::PA1>, Delay, DEFAULT_BUS_FREQUENCY_HZ> = Cs1237::try_new(
+//!     clk_pin,
+//!     data_pin,
+//!     Delay,
+//!     Gain::G1,
+//!     SamplesPerSecond::SPS10,
+//!     Channel::Temperature
+//!   ).await.unwrap();
 //!
-//! let mut adc = CS1237::new(
-//!   clk,
-//!   data,
-//!   drdy,
-//!   216_000_000,
-//! );
-//!
-//! adc.set_config(SampleRate::Hz10, Gain::Gain1, Channel::Temperature).await.unwrap();
-//!
-//! let value = adc.read().await.unwrap();
-//! info!("Value: {}", value);
+//!   let _value = adc.read().await.unwrap();
 //! }
 //! ```
 //!
@@ -41,69 +36,45 @@
 
 #![cfg_attr(not(test), no_std)]
 
-use core::convert::TryFrom;
-use embassy_stm32::{
-    exti::ExtiInput,
-    gpio::{Flex, Level, Output, Pin, Pull, Speed},
-};
+use byteorder::{BigEndian, ByteOrder};
 use embassy_time::{with_timeout, Duration};
+use embedded_hal::digital::{InputPin, OutputPin, PinState};
+use embedded_hal_async::digital::Wait;
 
 #[cfg(feature = "defmt")]
 use defmt::*;
 
+#[cfg(feature = "embassy-stm32")]
+pub mod stm32;
+
 /// The 2-wire serial interface clock frequency.
 /// According to the datasheet, the maximum clock frequency is 1MHz.
 /// We derate this a little to be safe.
-const BUS_FREQUENCY_HZ: u32 = 500_000;
+pub const DEFAULT_BUS_FREQUENCY_HZ: usize = 500_000;
 
 /// Sample rate configuration.
 #[derive(Clone, Copy, Debug)]
-pub enum SampleRate {
-    Hz10 = 0,
-    Hz40 = 1,
-    Hz640 = 2,
-    Hz1280 = 3,
-}
-
-impl TryFrom<i32> for SampleRate {
-    type Error = &'static str;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            10 => Ok(SampleRate::Hz10),
-            40 => Ok(SampleRate::Hz40),
-            640 => Ok(SampleRate::Hz640),
-            1280 => Ok(SampleRate::Hz1280),
-            _ => Err("Invalid value for SampleRate"),
-        }
-    }
+#[repr(u8)]
+pub enum SamplesPerSecond {
+    SPS10 = 0,
+    SPS40 = 1,
+    SPS640 = 2,
+    SPS1280 = 3,
 }
 
 /// Gain configuration.
 #[derive(Clone, Copy, Debug)]
+#[repr(u8)]
 pub enum Gain {
-    Gain1 = 0,
-    Gain2 = 1,
-    Gain64 = 2,
-    Gain128 = 3,
-}
-
-impl TryFrom<i32> for Gain {
-    type Error = &'static str;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            10 => Ok(Gain::Gain1),
-            2 => Ok(Gain::Gain2),
-            64 => Ok(Gain::Gain64),
-            128 => Ok(Gain::Gain128),
-            _ => Err("Invalid value for Gain"),
-        }
-    }
+    G1 = 0,
+    G2 = 1,
+    G64 = 2,
+    G128 = 3,
 }
 
 /// ADC channel configuration.
 #[derive(Clone, Copy, Debug)]
+#[repr(u8)]
 pub enum Channel {
     ChannelA = 0,
     Reserved = 1,
@@ -111,170 +82,196 @@ pub enum Channel {
     InternalShort = 3,
 }
 
-impl TryFrom<i32> for Channel {
-    type Error = &'static str;
-
-    fn try_from(value: i32) -> Result<Self, Self::Error> {
-        match value {
-            0 => Ok(Channel::ChannelA),
-            1 => Ok(Channel::Reserved),
-            2 => Ok(Channel::Temperature),
-            3 => Ok(Channel::InternalShort),
-            _ => Err("Invalid value for Channel"),
-        }
-    }
-}
-
 /// A driver for the CHIPSEA CS1237 ADC.
-pub struct CS1237<CLK: Pin, DATA: Pin, DRDY: Pin> {
-    clk: Output<'static, CLK>,
-    data: Flex<'static, DATA>,
-    drdy: ExtiInput<'static, DRDY>,
-    cpu_freq_hz: u32,
+pub struct Cs1237<
+    ClockPin,
+    DataPin,
+    Delay,
+    const BUS_FREQUENCY_HZ: usize = DEFAULT_BUS_FREQUENCY_HZ,
+> where
+    ClockPin: OutputPin,
+    DataPin: InputPin + OutputPin + FlexPin + Wait,
+    Delay: embedded_hal::delay::DelayNs,
+{
+    clk_pin: ClockPin,
+    data_pin: DataPin,
+    delay: Delay,
+    bus_period_ns: u32,
 }
 
+/// Errors that can occur when using the CS1237 driver.
 #[derive(PartialEq, Eq, Clone, Copy, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum CS1237Error {
+pub enum Error<PinErr> {
+    Pin(PinErr),
     NoTriggerPulse,
     SensorNotResponding,
 }
 
-impl<CLK, DATA, DRDY> CS1237<CLK, DATA, DRDY>
+impl<ClockPin, DataPin, Delay, PinErr, const BUS_FREQUENCY_HZ: usize>
+    Cs1237<ClockPin, DataPin, Delay, BUS_FREQUENCY_HZ>
 where
-    CLK: Pin,
-    DATA: Pin,
-    DRDY: Pin,
+    ClockPin: OutputPin<Error = PinErr>,
+    DataPin: InputPin<Error = PinErr>
+        + OutputPin<Error = PinErr>
+        + FlexPin<Error = PinErr>
+        + Wait<Error = PinErr>,
+    Delay: embedded_hal::delay::DelayNs,
 {
-    pub fn new(
-        clk: Output<'static, CLK>,
-        data: Flex<'static, DATA>,
-        drdy: ExtiInput<'static, DRDY>,
-        cpu_freq_hz: u32,
-    ) -> Self {
-        Self {
-            clk,
-            data,
-            drdy,
-            cpu_freq_hz,
-        }
+    /// Attempt to create a new CS1237 driver.
+    pub async fn try_new(
+        clk_pin: ClockPin,
+        data_pin: DataPin,
+        delay: Delay,
+        gain: Gain,
+        sample_rate: SamplesPerSecond,
+        channel: Channel,
+    ) -> Result<Self, Error<PinErr>> {
+        let mut adc = Self {
+            bus_period_ns: 1_000_000_000 / BUS_FREQUENCY_HZ as u32,
+            clk_pin,
+            data_pin,
+            delay,
+        };
+        adc.update_config(gain, sample_rate, channel).await?;
+        Ok(adc)
     }
 
     /// Read the next ADC sample.
-    pub async fn read(&mut self) -> Result<i32, CS1237Error> {
+    pub async fn read(&mut self) -> Result<i32, Error<PinErr>> {
         // Wait for a falling edge on the DATA/DRDY pin.
-        self.data.set_as_input(Pull::None);
+        self.data_pin.set_as_input().map_err(Error::Pin)?;
 
         let timeout = Duration::from_millis(110);
-        with_timeout(timeout, self.drdy.wait_for_falling_edge())
+        with_timeout(timeout, self.data_pin.wait_for_falling_edge())
             .await
-            .map_err(|_| CS1237Error::NoTriggerPulse)?;
+            .map_err(|_| Error::NoTriggerPulse)?
+            .map_err(Error::Pin)?;
 
-        let mut value: i32 = 0;
-        for i in (0..24).rev() {
-            value |= if self.read_bit() { 1 } else { 0 } << i;
+        // Read the 24bit sample.
+        let mut buf = [0u8; 3];
+        for byte in buf.iter_mut() {
+            *byte = self.read_byte()?;
         }
 
-        // Fix the sign bit.
-        if value > 0x7FFFFF {
-            value -= 0x1000000;
-        }
-
-        Ok(value)
+        Ok(BigEndian::read_i24(&buf))
     }
 
     /// Set the sample rate, gain and channel configuration.
-    pub async fn set_config(
+    pub async fn update_config(
         &mut self,
-        sample_rate: SampleRate,
         gain: Gain,
+        sample_rate: SamplesPerSecond,
         channel: Channel,
-    ) -> Result<(), CS1237Error> {
+    ) -> Result<(), Error<PinErr>> {
         // Reset the chip so we are in a known state.
-        self.power_down().await;
+        self.power_down().await?;
         self.power_up().await?;
 
         // Discard the 24bits of pending ADC data.
         for _ in 0..24 {
-            self.read_bit();
+            self.read_bit()?;
         }
 
         // Get the write status bits (bits 25 and 26).
-        let mut _write_status = if self.read_bit() { 1 } else { 0 };
-        _write_status |= if self.read_bit() { 2 } else { 0 };
+        let mut _write_status = if self.read_bit()? { 1 } else { 0 };
+        _write_status |= if self.read_bit()? { 2 } else { 0 };
 
         // Indicate that a command follows (bits 27, 28, 29).
-        self.read_bit();
-        self.read_bit();
-        self.read_bit();
+        self.read_bit()?;
+        self.read_bit()?;
+        self.read_bit()?;
 
-        self.data.set_as_output(Speed::VeryHigh);
+        self.data_pin.set_as_output().map_err(Error::Pin)?;
 
         // Write the configuration.
         let command: u8 = 0x65;
         for i in (0..7).rev() {
-            self.write_bit((command >> i) & 0x1 != 0);
+            self.write_bit((command >> i) & 0x1 != 0)?;
         }
 
         // write gap bit 37.
-        self.write_bit(true);
+        self.write_bit(true)?;
 
         let config = ((sample_rate as u8) << 4) | ((gain as u8) << 2) | (channel as u8);
-
         for i in (0..8).rev() {
-            self.write_bit((config >> i) & 0x1 != 0);
+            self.write_bit((config >> i) & 0x1 != 0)?;
         }
 
-        // final clock pulse, bit 46.
-        self.data.set_as_input(Pull::None);
-        self.read_bit();
+        // Final clock pulse, bit 46.
+        self.data_pin.set_as_input().map_err(Error::Pin)?;
+        self.read_bit()?;
 
         // Wait for the data line to go low, will take between 3ms and 300ms
         // Depending on configured sample rate.
         let timeout = Duration::from_millis(330);
-        with_timeout(timeout, self.drdy.wait_for_falling_edge())
+        with_timeout(timeout, self.data_pin.wait_for_falling_edge())
             .await
-            .map_err(|_| CS1237Error::SensorNotResponding)?;
+            .map_err(|_| Error::SensorNotResponding)?
+            .map_err(Error::Pin)?;
 
         Ok(())
     }
 
     /// Power down the ADC to save power.
-    pub async fn power_down(&mut self) {
-        self.clk.set_high();
-        cortex_m::asm::delay(self.cpu_freq_hz / 10000); // 100us
+    pub async fn power_down(&mut self) -> Result<(), Error<PinErr>> {
+        self.clk_pin.set_high().map_err(Error::Pin)?;
+        self.delay.delay_us(100);
+        Ok(())
     }
 
     /// Power up the ADC.
-    pub async fn power_up(&mut self) -> Result<(), CS1237Error> {
-        self.data.set_as_input(Pull::None);
-        self.clk.set_low();
+    pub async fn power_up(&mut self) -> Result<(), Error<PinErr>> {
+        self.data_pin.set_as_input().map_err(Error::Pin)?;
+        self.clk_pin.set_low().map_err(Error::Pin)?;
 
         // Wait for the data line to go low, will take between 3ms and 300ms
         // Depending on configured sample rate.
         let timeout = Duration::from_millis(330);
-        with_timeout(timeout, self.drdy.wait_for_falling_edge())
+        with_timeout(timeout, self.data_pin.wait_for_falling_edge())
             .await
-            .map_err(|_| CS1237Error::SensorNotResponding)?;
+            .map_err(|_| Error::SensorNotResponding)?
+            .map_err(Error::Pin)?;
 
         Ok(())
     }
 
-    fn read_bit(&mut self) -> bool {
-        self.clk.set_high();
-        cortex_m::asm::delay(self.cpu_freq_hz / (2 * BUS_FREQUENCY_HZ));
-        self.clk.set_low();
-        cortex_m::asm::delay(self.cpu_freq_hz / (2 * BUS_FREQUENCY_HZ));
-        self.data.is_high()
+    fn read_byte(&mut self) -> Result<u8, Error<PinErr>> {
+        let mut byte = 0;
+        for _ in (0..8).rev() {
+            byte <<= 1;
+            byte |= if self.read_bit()? { 1 } else { 0 };
+        }
+        Ok(byte)
     }
 
-    fn write_bit(&mut self, bit: bool) {
-        self.data
-            .set_level(if bit { Level::High } else { Level::Low });
-        cortex_m::asm::delay(self.cpu_freq_hz / (4 * BUS_FREQUENCY_HZ));
-        self.clk.set_high();
-        cortex_m::asm::delay(self.cpu_freq_hz / (4 * BUS_FREQUENCY_HZ));
-        self.clk.set_low();
-        cortex_m::asm::delay(self.cpu_freq_hz / (2 * BUS_FREQUENCY_HZ));
+    fn read_bit(&mut self) -> Result<bool, Error<PinErr>> {
+        self.clk_pin.set_high().map_err(Error::Pin)?;
+        self.delay.delay_ns(self.bus_period_ns / 2);
+        self.clk_pin.set_low().map_err(Error::Pin)?;
+        self.delay.delay_ns(self.bus_period_ns / 2);
+        self.data_pin.is_high().map_err(Error::Pin)
     }
+
+    fn write_bit(&mut self, bit: bool) -> Result<(), Error<PinErr>> {
+        self.data_pin
+            .set_state(if bit { PinState::High } else { PinState::Low })
+            .map_err(Error::Pin)?;
+        self.clk_pin.set_high().map_err(Error::Pin)?;
+        self.delay.delay_ns(self.bus_period_ns / 2);
+        self.clk_pin.set_low().map_err(Error::Pin)?;
+        self.delay.delay_ns(self.bus_period_ns / 2);
+        Ok(())
+    }
+}
+
+/// FlexPin is a pin that can be set as input or output.
+/// This is required because the CS1237 uses a single pin for data input,
+/// output, and interrupts.
+pub trait FlexPin: embedded_hal::digital::ErrorType {
+    /// Set the pin as an input.
+    fn set_as_input(&mut self) -> Result<(), Self::Error>;
+
+    /// Set the pin as an output.
+    fn set_as_output(&mut self) -> Result<(), Self::Error>;
 }
