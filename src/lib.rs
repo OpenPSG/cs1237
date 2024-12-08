@@ -150,9 +150,12 @@ where
 
         // Read the 24bit sample.
         let mut buf = [0u8; 3];
-        for byte in buf.iter_mut() {
-            *byte = self.read_byte()?;
-        }
+        critical_section::with(|_| -> Result<(), Error<PinErr>> {
+            for byte in buf.iter_mut() {
+                *byte = self.read_byte()?;
+            }
+            Ok(())
+        })?;
 
         Ok(BigEndian::read_i24(&buf))
     }
@@ -168,39 +171,43 @@ where
         self.power_down().await?;
         self.power_up().await?;
 
-        // Discard the 24bits of pending ADC data.
-        for _ in 0..24 {
+        critical_section::with(|_| -> Result<(), Error<PinErr>> {
+            // Discard the 24bits of pending ADC data.
+            for _ in 0..24 {
+                self.read_bit()?;
+            }
+
+            // Get the write status bits (bits 25 and 26).
+            let mut _write_status = if self.read_bit()? { 1 } else { 0 };
+            _write_status |= if self.read_bit()? { 2 } else { 0 };
+
+            // Indicate that a command follows (bits 27, 28, 29).
             self.read_bit()?;
-        }
+            self.read_bit()?;
+            self.read_bit()?;
 
-        // Get the write status bits (bits 25 and 26).
-        let mut _write_status = if self.read_bit()? { 1 } else { 0 };
-        _write_status |= if self.read_bit()? { 2 } else { 0 };
+            self.data_pin.set_as_output().map_err(Error::Pin)?;
 
-        // Indicate that a command follows (bits 27, 28, 29).
-        self.read_bit()?;
-        self.read_bit()?;
-        self.read_bit()?;
+            // Write the configuration.
+            let command: u8 = 0x65;
+            for i in (0..7).rev() {
+                self.write_bit((command >> i) & 0x1 != 0)?;
+            }
 
-        self.data_pin.set_as_output().map_err(Error::Pin)?;
+            // write gap bit 37.
+            self.write_bit(true)?;
 
-        // Write the configuration.
-        let command: u8 = 0x65;
-        for i in (0..7).rev() {
-            self.write_bit((command >> i) & 0x1 != 0)?;
-        }
+            let config = ((sample_rate as u8) << 4) | ((gain as u8) << 2) | (channel as u8);
+            for i in (0..8).rev() {
+                self.write_bit((config >> i) & 0x1 != 0)?;
+            }
 
-        // write gap bit 37.
-        self.write_bit(true)?;
+            // Final clock pulse, bit 46.
+            self.data_pin.set_as_input().map_err(Error::Pin)?;
+            self.read_bit()?;
 
-        let config = ((sample_rate as u8) << 4) | ((gain as u8) << 2) | (channel as u8);
-        for i in (0..8).rev() {
-            self.write_bit((config >> i) & 0x1 != 0)?;
-        }
-
-        // Final clock pulse, bit 46.
-        self.data_pin.set_as_input().map_err(Error::Pin)?;
-        self.read_bit()?;
+            Ok(())
+        })?;
 
         // Wait for the data line to go low, will take between 3ms and 300ms
         // Depending on configured sample rate.
