@@ -7,7 +7,7 @@
 //!
 //! ```no_run
 //! use embassy_time::Delay;
-//! use cs1237::{Cs1237, Gain, SamplesPerSecond, Channel, DEFAULT_BUS_FREQUENCY_HZ};
+//! use cs1237::{Cs1237, Gain, SamplesPerSecond, Channel};
 //! use cs1237::stm32::MetaPin;
 //! use embassy_stm32::{gpio::{Output, Level, Speed}, Peripherals, peripherals};
 //!
@@ -15,7 +15,7 @@
 //!   let clk_pin = Output::new(p.PA0, Level::Low, Speed::VeryHigh);
 //!   let data_pin = MetaPin::new(p.PA1, p.EXTI1);
 //!
-//!   let mut adc: Cs1237<Output<'static, peripherals::PA0>, MetaPin<'static, peripherals::PA1>, Delay, DEFAULT_BUS_FREQUENCY_HZ> = Cs1237::try_new(
+//!   let mut adc: Cs1237<Output<'static, peripherals::PA0>, MetaPin<'static, peripherals::PA1>, Delay> = Cs1237::try_new(
 //!     clk_pin,
 //!     data_pin,
 //!     Delay,
@@ -32,7 +32,6 @@
 //!
 //! This crate is licensed under the Mozilla Public License 2.0 (MPL-2.0).
 //! See the LICENSE file for more details.
-//!
 
 #![cfg_attr(not(test), no_std)]
 
@@ -40,9 +39,6 @@ use byteorder::{BigEndian, ByteOrder};
 use embassy_time::{with_timeout, Duration};
 use embedded_hal::digital::{InputPin, OutputPin, PinState};
 use embedded_hal_async::digital::Wait;
-
-#[cfg(feature = "defmt")]
-use defmt::*;
 
 #[cfg(feature = "embassy-stm32")]
 pub mod stm32;
